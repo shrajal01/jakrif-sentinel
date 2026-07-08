@@ -3,6 +3,7 @@ from app.models.circuit_breaker import CircuitBreaker
 from app.models.retry_attempt import RetryAttempt
 from app.models.request_log import RequestLog
 from app.models.health_snapshot import HealthSnapshot
+from app.models.user import User
 
 __all__ = [
     "Service",
@@ -10,4 +11,5 @@ __all__ = [
     "RetryAttempt",
     "RequestLog",
     "HealthSnapshot",
+    "User",
 ]
