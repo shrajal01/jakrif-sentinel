@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.router import api_router
+from app.api.auth import router as auth_router
 from app.core.config import settings
 from app.database.session import engine
 
@@ -46,8 +47,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount the main API router
+# Mount the router
 app.include_router(api_router)
+app.include_router(auth_router)
 
 @app.get("/health", tags=["Health"])
 def health_check():
