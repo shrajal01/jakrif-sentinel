@@ -12,7 +12,7 @@ class PaymentCreate(BaseModel):
     """
     Schema for creating a new payment.
     """
-    amount: Decimal = Field(..., gt=0, description="Payment amount must be greater than 0")
+    amount: Decimal = Field(..., gt=Decimal('0'), description="Payment amount must be greater than 0")
     currency: str = Field(default="USD", min_length=3, max_length=3, description="Currency code (e.g., USD)")
     merchant_reference: Optional[str] = Field(None, max_length=255, description="Merchant's internal reference")
     description: Optional[str] = Field(None, max_length=500, description="Payment description")

@@ -4,6 +4,7 @@ from app.models.retry_attempt import RetryAttempt
 from app.models.request_log import RequestLog
 from app.models.health_snapshot import HealthSnapshot
 from app.models.user import User
+from app.models.payment import Payment
 
 __all__ = [
     "Service",
@@ -12,4 +13,5 @@ __all__ = [
     "RequestLog",
     "HealthSnapshot",
     "User",
+    "Payment",
 ]
