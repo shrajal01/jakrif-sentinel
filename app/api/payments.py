@@ -1,0 +1,66 @@
+from typing import List
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database.session import get_db
+# Assuming schemas will be available in app.schemas.payment
+from app.schemas.payment import PaymentCreate, PaymentResponse
+# Using the payment_service from app.services
+from app.services import payment_service
+
+router = APIRouter(prefix="/payments", tags=["Payments"])
+
+
+@router.post(
+    "",
+    response_model=PaymentResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new payment",
+)
+async def create_payment(
+    payment_in: PaymentCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a new payment.
+    Note: The payment state machine is not implemented yet.
+    """
+    return await payment_service.create_payment(db=db, payment_in=payment_in)
+
+
+@router.get(
+    "",
+    response_model=List[PaymentResponse],
+    summary="Get all payments",
+)
+async def get_payments(
+    skip: int = 0,
+    limit: int = 100,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retrieve a list of payments.
+    """
+    return await payment_service.get_payments(db=db, skip=skip, limit=limit)
+
+
+@router.get(
+    "/{payment_id}",
+    response_model=PaymentResponse,
+    summary="Get payment by ID",
+)
+async def get_payment(
+    payment_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retrieve a specific payment by its ID.
+    """
+    payment = await payment_service.get_payment_by_id(db=db, payment_id=payment_id)
+    if not payment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Payment not found"
+        )
+    return payment
