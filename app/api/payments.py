@@ -1,13 +1,10 @@
-from typing import List
-
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.session import get_db
-# Assuming schemas will be available in app.schemas.payment
-from app.schemas.payment import PaymentCreate, PaymentResponse
-# Using the payment_service from app.services
+from app.schemas.payment import PaymentCreate, PaymentResponse, PaymentListResponse
 from app.services import payment_service
+
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
@@ -31,7 +28,7 @@ async def create_payment(
 
 @router.get(
     "",
-    response_model=List[PaymentResponse],
+    response_model=PaymentListResponse,
     summary="Get all payments",
 )
 async def get_payments(
@@ -42,7 +39,8 @@ async def get_payments(
     """
     Retrieve a list of payments.
     """
-    return await payment_service.get_payments(db=db, skip=skip, limit=limit)
+    items, total = await payment_service.list_payments(db=db, skip=skip, limit=limit)
+    return {"items": items, "total": total}
 
 
 @router.get(
@@ -57,7 +55,7 @@ async def get_payment(
     """
     Retrieve a specific payment by its ID.
     """
-    payment = await payment_service.get_payment_by_id(db=db, payment_id=payment_id)
+    payment = await payment_service.get_payment(db=db, payment_id=payment_id)
     if not payment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
