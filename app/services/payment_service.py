@@ -1,6 +1,7 @@
 import uuid
 from typing import Optional, List, Tuple
 
+from fastapi import HTTPException, status as http_status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func
@@ -49,14 +50,30 @@ async def list_payments(db: AsyncSession, skip: int = 0, limit: int = 100) -> Tu
     return items, total
 
 
+ALLOWED_TRANSITIONS = {
+    PaymentStatus.CREATED: {PaymentStatus.ENQUEUED},
+    PaymentStatus.ENQUEUED: {PaymentStatus.PROCESSING},
+    PaymentStatus.PROCESSING: {PaymentStatus.SUCCESS, PaymentStatus.FAILED},
+    PaymentStatus.SUCCESS: set(),
+    PaymentStatus.FAILED: set(),
+}
+
+
 async def update_payment_status(db: AsyncSession, payment_id: int, status: PaymentStatus) -> Payment:
     """
     Update the status of an existing payment.
-    Validates payment existence before updating.
+    Validates payment existence and allowed state transitions before updating.
     """
     payment = await get_payment(db, payment_id)
     if not payment:
         raise ValueError(f"Payment with id {payment_id} does not exist.")
+        
+    allowed_next_states = ALLOWED_TRANSITIONS.get(payment.status, set())
+    if status not in allowed_next_states:
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid state transition from {payment.status.value} to {status.value}"
+        )
         
     payment.status = status
     await db.commit()
