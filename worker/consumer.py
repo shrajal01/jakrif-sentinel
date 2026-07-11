@@ -18,29 +18,40 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
     """
     Process an incoming RabbitMQ message from the payment queue.
     """
-    async with message.process():
-        logger.info("--- Received Payment Message ---")
+    try:
+        # Use explicit ACK/REJECT handling instead of message.process() context manager
+        # This gives us fine-grained control to prevent infinite loops (poison pills)
+        body = ""
         payment_data = {}
         try:
             body = message.body.decode("utf-8")
             payment_data = json.loads(body)
-            
-            payment_id = payment_data.get("payment_id")
-            amount = payment_data.get("amount")
-            currency = payment_data.get("currency")
-            merchant_reference = payment_data.get("merchant_reference")
+        except Exception as e:
+            logger.error(f"[{message.message_id}] Rejected malformed message: {e}")
+            await message.reject(requeue=False)
+            return
 
-            logger.info(f"Payment ID: {payment_id}")
-            logger.info(f"Request: {payment_data}")
+        payment_id = payment_data.get("payment_id")
+        amount = payment_data.get("amount")
+        currency = payment_data.get("currency")
+        merchant_reference = payment_data.get("merchant_reference")
 
-            async with AsyncSessionLocal() as db:
+        if not payment_id:
+            logger.error(f"[{message.message_id}] Rejected message missing payment_id: {payment_data}")
+            await message.reject(requeue=False)
+            return
+
+        logger.info(f"[{payment_id}] Payment Received - Request: {payment_data}")
+
+        async with AsyncSessionLocal() as db:
+            try:
                 # 1. Update to ENQUEUED
                 await update_payment_status_by_uuid(db, payment_id, PaymentStatus.ENQUEUED)
-                logger.info(f"Payment {payment_id} status updated to ENQUEUED")
+                logger.info(f"[{payment_id}] Enqueued - Status updated in database")
 
                 # 2. Update to PROCESSING
                 await update_payment_status_by_uuid(db, payment_id, PaymentStatus.PROCESSING)
-                logger.info(f"Payment {payment_id} status updated to PROCESSING")
+                logger.info(f"[{payment_id}] Processing - Contacting Fake Bank")
 
                 # 3. Call Fake Bank
                 try:
@@ -49,28 +60,40 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                         currency=currency,
                         reference=merchant_reference
                     )
-                    logger.info(f"Response: {response}")
+                    logger.info(f"[{payment_id}] Bank Response - {response}")
 
                     if response.get("status") == "SUCCESS":
                         await update_payment_status_by_uuid(db, payment_id, PaymentStatus.SUCCESS)
-                        logger.info(f"Payment {payment_id} status updated to SUCCESS")
+                        logger.info(f"[{payment_id}] Final Status - SUCCESS")
                     else:
                         await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
-                        logger.info(f"Payment {payment_id} status updated to FAILED")
+                        logger.info(f"[{payment_id}] Final Status - FAILED (Bank declined)")
 
                 except (FakeBankTimeoutError, FakeBankServerError) as e:
-                    logger.error(f"Fake Bank Error for Payment ID {payment_id}: {e}")
+                    logger.warning(f"[{payment_id}] Bank Response - ERROR: {e}")
                     await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
-                    logger.info(f"Payment {payment_id} status updated to FAILED due to external error")
+                    logger.info(f"[{payment_id}] Final Status - FAILED (External system error)")
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to decode message JSON: {e}")
-        except ValueError as e:
-            logger.error(f"Status transition or DB error for Payment ID {payment_data.get('payment_id')}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error processing payment message: {e}", exc_info=True)
-            
-        logger.info("--- End Payment Message Processing ---")
+                # Acknowledge successful processing (including expected business failures)
+                await message.ack()
+
+            except ValueError as e:
+                # DB transition failure or UUID not found (invalid state, do not requeue)
+                logger.error(f"[{payment_id}] Database/State Error: {e}")
+                await message.reject(requeue=False)
+                
+            except Exception as e:
+                # Unexpected database failure (e.g., connection lost)
+                logger.error(f"[{payment_id}] Unexpected error during processing: {e}", exc_info=True)
+                await message.reject(requeue=False)
+
+    except Exception as e:
+        # Ultimate fallback to ensure worker NEVER crashes
+        logger.critical(f"Critical error in message handler: {e}", exc_info=True)
+        try:
+            await message.reject(requeue=False)
+        except Exception:
+            pass
 
 
 async def start_consumer() -> aio_pika.abc.AbstractRobustConnection:
