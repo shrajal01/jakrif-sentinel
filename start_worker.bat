@@ -1,0 +1,3 @@
+@echo off
+echo Starting the RabbitMQ worker...
+python -m worker.main
