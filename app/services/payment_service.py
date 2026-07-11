@@ -33,13 +33,10 @@ async def create_payment(db: AsyncSession, payment_in: PaymentCreate) -> Payment
 
     try:
         await publish_payment_event({
-            "id": payment.id,
             "payment_id": str(payment.payment_id),
             "amount": float(payment.amount),
             "currency": payment.currency,
-            "status": payment.status.value,
             "merchant_reference": payment.merchant_reference,
-            "description": payment.description,
         })
     except Exception as e:
         logger.error(f"Failed to publish payment event for payment {payment.id}: {e}")
