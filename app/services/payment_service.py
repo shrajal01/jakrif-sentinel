@@ -1,4 +1,5 @@
 import uuid
+import logging
 from typing import Optional, List, Tuple
 
 from fastapi import HTTPException, status as http_status
@@ -8,6 +9,9 @@ from sqlalchemy import func
 
 from app.models.payment import Payment, PaymentStatus
 from app.schemas.payment import PaymentCreate
+from worker.publisher import publish_payment_event
+
+logger = logging.getLogger(__name__)
 
 
 async def create_payment(db: AsyncSession, payment_in: PaymentCreate) -> Payment:
@@ -26,6 +30,24 @@ async def create_payment(db: AsyncSession, payment_in: PaymentCreate) -> Payment
     db.add(payment)
     await db.commit()
     await db.refresh(payment)
+
+    try:
+        await publish_payment_event({
+            "id": payment.id,
+            "payment_id": str(payment.payment_id),
+            "amount": float(payment.amount),
+            "currency": payment.currency,
+            "status": payment.status.value,
+            "merchant_reference": payment.merchant_reference,
+            "description": payment.description,
+        })
+    except Exception as e:
+        logger.error(f"Failed to publish payment event for payment {payment.id}: {e}")
+        # The payment was already saved to the database successfully.
+        # Failing here would return an error to the user even though their payment
+        # record exists. We log the failure so it can be monitored, but the
+        # creation process should still succeed to avoid data inconsistency.
+
     return payment
 
 
