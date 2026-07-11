@@ -4,7 +4,7 @@ import sys
 
 from worker.consumer import start_consumer
 
-# Configure basic logging for the worker process
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -13,22 +13,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 async def main() -> None:
-    """
-    Main entrypoint for the RabbitMQ consumer worker.
-    """
-    logger.info("Initializing worker application...")
+    logger.info("Initializing worker...")
     connection = None
     try:
         connection = await start_consumer()
+        logger.info("Worker is running. Press CTRL+C to exit.")
         
-        logger.info("Worker successfully started. Press CTRL+C to exit.")
-        # Infinite consume loop - await a Future that never resolves
+        # Continuously wait for messages
         await asyncio.Future()
         
     except asyncio.CancelledError:
-        logger.info("Worker shutting down gracefully (CancelledError)...")
+        logger.info("Received cancellation signal. Shutting down...")
     except Exception as e:
-        logger.error(f"Worker encountered an unexpected error: {e}", exc_info=True)
+        logger.error(f"Worker encountered an error: {e}", exc_info=True)
     finally:
         if connection and not connection.is_closed:
             logger.info("Closing RabbitMQ connection...")
@@ -39,4 +36,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Received KeyboardInterrupt. Worker exiting gracefully...")
+        logger.info("Graceful shutdown triggered via KeyboardInterrupt. Exiting...")
