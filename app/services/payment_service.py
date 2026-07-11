@@ -56,6 +56,16 @@ async def get_payment(db: AsyncSession, payment_id: int) -> Optional[Payment]:
     return result.scalar_one_or_none()
 
 
+async def get_payment_by_uuid(db: AsyncSession, payment_uuid: uuid.UUID | str) -> Optional[Payment]:
+    """
+    Retrieve a payment by its external UUID.
+    """
+    if isinstance(payment_uuid, str):
+        payment_uuid = uuid.UUID(payment_uuid)
+    result = await db.execute(select(Payment).where(Payment.payment_id == payment_uuid))
+    return result.scalar_one_or_none()
+
+
 async def list_payments(db: AsyncSession, skip: int = 0, limit: int = 100) -> Tuple[List[Payment], int]:
     """
     Retrieve a paginated list of payments along with the total count.
@@ -92,6 +102,26 @@ async def update_payment_status(db: AsyncSession, payment_id: int, status: Payme
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid state transition from {payment.status.value} to {status.value}"
+        )
+        
+    payment.status = status
+    await db.commit()
+    await db.refresh(payment)
+    return payment
+
+
+async def update_payment_status_by_uuid(db: AsyncSession, payment_uuid: uuid.UUID | str, status: PaymentStatus) -> Payment:
+    """
+    Update the status of an existing payment using UUID.
+    """
+    payment = await get_payment_by_uuid(db, payment_uuid)
+    if not payment:
+        raise ValueError(f"Payment with uuid {payment_uuid} does not exist.")
+        
+    allowed_next_states = ALLOWED_TRANSITIONS.get(payment.status, set())
+    if status not in allowed_next_states:
+        raise ValueError(
+            f"Invalid state transition from {payment.status.value} to {status.value}"
         )
         
     payment.status = status

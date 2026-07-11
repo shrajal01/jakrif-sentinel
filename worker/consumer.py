@@ -8,6 +8,9 @@ from app.services.fake_bank import (
     FakeBankTimeoutError,
     FakeBankServerError,
 )
+from app.database.session import AsyncSessionLocal
+from app.services.payment_service import update_payment_status_by_uuid
+from app.models.payment import PaymentStatus
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +18,6 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
     """
     Process an incoming RabbitMQ message from the payment queue.
     """
-    # Using message.process() automatically ACKs the message when the context manager 
-    # exits without exceptions. By catching all exceptions inside, we ensure the 
-    # message is ACKed and NOT retried.
     async with message.process():
         logger.info("--- Received Payment Message ---")
         payment_data = {}
@@ -33,21 +33,40 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
             logger.info(f"Payment ID: {payment_id}")
             logger.info(f"Request: {payment_data}")
 
-            # Call Fake Bank asynchronously
-            response = await fake_bank_service.process_transaction(
-                amount=amount,
-                currency=currency,
-                reference=merchant_reference
-            )
-            
-            logger.info(f"Response: {response}")
+            async with AsyncSessionLocal() as db:
+                # 1. Update to ENQUEUED
+                await update_payment_status_by_uuid(db, payment_id, PaymentStatus.ENQUEUED)
+                logger.info(f"Payment {payment_id} status updated to ENQUEUED")
+
+                # 2. Update to PROCESSING
+                await update_payment_status_by_uuid(db, payment_id, PaymentStatus.PROCESSING)
+                logger.info(f"Payment {payment_id} status updated to PROCESSING")
+
+                # 3. Call Fake Bank
+                try:
+                    response = await fake_bank_service.process_transaction(
+                        amount=amount,
+                        currency=currency,
+                        reference=merchant_reference
+                    )
+                    logger.info(f"Response: {response}")
+
+                    if response.get("status") == "SUCCESS":
+                        await update_payment_status_by_uuid(db, payment_id, PaymentStatus.SUCCESS)
+                        logger.info(f"Payment {payment_id} status updated to SUCCESS")
+                    else:
+                        await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
+                        logger.info(f"Payment {payment_id} status updated to FAILED")
+
+                except (FakeBankTimeoutError, FakeBankServerError) as e:
+                    logger.error(f"Fake Bank Error for Payment ID {payment_id}: {e}")
+                    await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
+                    logger.info(f"Payment {payment_id} status updated to FAILED due to external error")
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to decode message JSON: {e}")
-        except FakeBankTimeoutError as e:
-            logger.error(f"Fake Bank Timeout for Payment ID {payment_data.get('payment_id')}: {e}")
-        except FakeBankServerError as e:
-            logger.error(f"Fake Bank Server Error for Payment ID {payment_data.get('payment_id')}: {e}")
+        except ValueError as e:
+            logger.error(f"Status transition or DB error for Payment ID {payment_data.get('payment_id')}: {e}")
         except Exception as e:
             logger.error(f"Unexpected error processing payment message: {e}", exc_info=True)
             
