@@ -83,6 +83,31 @@ class RabbitMQPublisher:
             logger.error(f"Failed to publish message: {str(e)}")
             raise
 
+    async def publish_to_queue(self, queue_name: str, message: Dict[str, Any]):
+        """
+        Publish a message directly to a specific queue via the default exchange.
+        """
+        try:
+            await self.connect()
+            message_body = json.dumps(message).encode('utf-8')
+            
+            msg = Message(
+                body=message_body,
+                delivery_mode=DeliveryMode.PERSISTENT
+            )
+            
+            logger.debug(f"Publishing message directly to queue {queue_name}: {message}")
+
+            assert self.channel is not None, "Channel must be initialized before publishing"
+            await self.channel.default_exchange.publish(
+                msg,
+                routing_key=queue_name
+            )
+            logger.info(f"Message published to {queue_name} successfully.")
+        except Exception as e:
+            logger.error(f"Failed to publish message to queue {queue_name}: {str(e)}")
+            raise
+
 publisher = RabbitMQPublisher()
 
 async def publish_payment_event(payment_data: Dict[str, Any]):

@@ -11,6 +11,7 @@ from app.services.fake_bank import (
 from app.database.session import AsyncSessionLocal
 from app.services.payment_service import update_payment_status_by_uuid
 from app.models.payment import PaymentStatus
+from worker.publisher import publisher
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +71,14 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                         logger.info(f"[{payment_id}] Final Status - FAILED (Bank declined)")
 
                 except (FakeBankTimeoutError, FakeBankServerError) as e:
-                    logger.warning(f"[{payment_id}] Bank Response - ERROR: {e}")
-                    await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
-                    logger.info(f"[{payment_id}] Final Status - FAILED (External system error)")
+                    logger.warning(f"[{payment_id}] Bank Response - RECOVERABLE ERROR: {e}")
+                    
+                    await publisher.publish_to_queue(
+                        settings.PAYMENTS_RETRY_QUEUE_NAME,
+                        payment_data
+                    )
+                    
+                    logger.info(f"[{payment_id}] Payment sent to retry queue. Final Status - PROCESSING (Retrying)")
 
                 # Acknowledge successful processing (including expected business failures)
                 await message.ack()
