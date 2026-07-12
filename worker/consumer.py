@@ -57,13 +57,17 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
 
         async with AsyncSessionLocal() as db:
             try:
-                # 1. Update to ENQUEUED
-                await update_payment_status_by_uuid(db, payment_id, PaymentStatus.ENQUEUED)
-                logger.info(f"[{payment_id}] Enqueued - Status updated in database")
+                retry_count = payment_data.get("retry_count", 0)
+                if retry_count == 0:
+                    # 1. Update to ENQUEUED
+                    await update_payment_status_by_uuid(db, payment_id, PaymentStatus.ENQUEUED)
+                    logger.info(f"[{payment_id}] Enqueued - Status updated in database")
 
-                # 2. Update to PROCESSING
-                await update_payment_status_by_uuid(db, payment_id, PaymentStatus.PROCESSING)
-                logger.info(f"[{payment_id}] Processing - Contacting Fake Bank")
+                    # 2. Update to PROCESSING
+                    await update_payment_status_by_uuid(db, payment_id, PaymentStatus.PROCESSING)
+                    logger.info(f"[{payment_id}] Processing - Contacting Fake Bank")
+                else:
+                    logger.info(f"[{payment_id}] Processing (Retry {retry_count}) - Continuing from existing PROCESSING state")
 
                 # 3. Call Fake Bank
                 try:

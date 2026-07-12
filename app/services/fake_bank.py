@@ -18,11 +18,11 @@ class FakeBankConfig:
     Configuration for adjusting probabilities and delays of the Fake Bank service.
     Probabilities should ideally sum to 1.0 (excluding the delay parameters).
     """
-    SUCCESS_PROBABILITY: float = 0.60
-    FAILURE_PROBABILITY: float = 0.20
-    TIMEOUT_PROBABILITY: float = 0.05
-    HTTP_500_PROBABILITY: float = 0.05
-    DUPLICATE_PROBABILITY: float = 0.10
+    SUCCESS_PROBABILITY: float = 0.00
+    FAILURE_PROBABILITY: float = 0.00
+    TIMEOUT_PROBABILITY: float = 1.00
+    HTTP_500_PROBABILITY: float = 0.00
+    DUPLICATE_PROBABILITY: float = 0.00
     
     MIN_DELAY_SECONDS: float = 0.1
     MAX_DELAY_SECONDS: float = 2.0
