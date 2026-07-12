@@ -10,6 +10,8 @@ class WorkerSettings(BaseSettings):
     
     PAYMENTS_EXCHANGE_NAME: str = "payments_exchange"
     PAYMENTS_QUEUE_NAME: str = "payments_queue"
+    PAYMENTS_RETRY_QUEUE_NAME: str = "payments_retry_queue"
+    PAYMENTS_DEAD_LETTER_QUEUE_NAME: str = "payments_dead_letter_queue"
     PAYMENTS_ROUTING_KEY: str = "payment.process"
 
     model_config = SettingsConfigDict(

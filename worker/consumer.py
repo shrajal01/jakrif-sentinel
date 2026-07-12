@@ -120,6 +120,18 @@ async def start_consumer() -> aio_pika.abc.AbstractRobustConnection:
         durable=True
     )
 
+    logger.info(f"Declaring retry queue: {settings.PAYMENTS_RETRY_QUEUE_NAME}")
+    await channel.declare_queue(
+        settings.PAYMENTS_RETRY_QUEUE_NAME,
+        durable=True
+    )
+
+    logger.info(f"Declaring dead letter queue: {settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME}")
+    await channel.declare_queue(
+        settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME,
+        durable=True
+    )
+
     logger.info(f"Binding queue to exchange with routing key: {settings.PAYMENTS_ROUTING_KEY}")
     await queue.bind(
         exchange,

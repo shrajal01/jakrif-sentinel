@@ -39,6 +39,18 @@ class RabbitMQPublisher:
                     durable=True
                 )
                 
+                # Declare retry queue
+                await self.channel.declare_queue(
+                    settings.PAYMENTS_RETRY_QUEUE_NAME, 
+                    durable=True
+                )
+                
+                # Declare dead letter queue
+                await self.channel.declare_queue(
+                    settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME, 
+                    durable=True
+                )
+                
                 # Bind queue to exchange
                 await queue.bind(
                     self.exchange, 
