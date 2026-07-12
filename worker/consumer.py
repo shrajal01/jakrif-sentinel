@@ -1,6 +1,7 @@
 import json
 import logging
 import random
+import asyncio
 import aio_pika
 
 from worker.config import settings
@@ -142,6 +143,69 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
             pass
 
 
+async def process_retry_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
+    """
+    Consumer for the retry queue.
+    Sleeps for the calculated retry_delay, then re-publishes the message to the main queue.
+    """
+    try:
+        body = ""
+        payment_data = {}
+        try:
+            body = message.body.decode("utf-8")
+            payment_data = json.loads(body)
+        except Exception as e:
+            logger.error(f"[{message.message_id}] Retry Engine - Rejected malformed message: {e}")
+            await publisher.publish_to_queue(
+                settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME,
+                {"original_body": body if 'body' in locals() else "", "dlq_reason": f"Malformed retry message: {e}"}
+            )
+            await message.reject(requeue=False)
+            return
+
+        payment_id = payment_data.get("payment_id")
+        
+        if not payment_id:
+            logger.error(f"[{message.message_id}] Retry Engine - Rejected message missing payment_id")
+            payment_data["dlq_reason"] = "Missing payment_id in retry"
+            await publisher.publish_to_queue(settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME, payment_data)
+            await message.reject(requeue=False)
+            return
+
+        delay = payment_data.get("retry_delay", 0)
+        retry_count = payment_data.get("retry_count", 1)
+        
+        logger.info(f"[{payment_id}] Retry Engine - Holding message for {delay:.2f}s (Retry {retry_count}/3)")
+        
+        # Non-blocking sleep for the backoff duration
+        await asyncio.sleep(delay)
+        
+        try:
+            # Route it back through the exchange so it hits the main queue normally
+            await publisher.publish(
+                routing_key=settings.PAYMENTS_ROUTING_KEY,
+                message=payment_data
+            )
+            logger.info(f"[{payment_id}] Retry Engine - Requeued successfully to main queue")
+            await message.ack()
+        except Exception as e:
+            logger.error(f"[{payment_id}] Retry Engine - Failed to requeue: {e}", exc_info=True)
+            payment_data["dlq_reason"] = f"Failed to requeue from retry engine: {e}"
+            await publisher.publish_to_queue(settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME, payment_data)
+            await message.reject(requeue=False)
+
+    except Exception as e:
+        logger.critical(f"Critical error in retry handler: {e}", exc_info=True)
+        try:
+            await publisher.publish_to_queue(
+                settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME,
+                {"message_id": message.message_id, "dlq_reason": f"Critical retry handler error: {str(e)}"}
+            )
+            await message.reject(requeue=False)
+        except Exception:
+            pass
+
+
 async def start_consumer() -> aio_pika.abc.AbstractRobustConnection:
     """
     Connects to RabbitMQ, sets up the exchange/queue/binding, and starts consuming.
@@ -186,5 +250,19 @@ async def start_consumer() -> aio_pika.abc.AbstractRobustConnection:
 
     logger.info("Starting to consume messages...")
     await queue.consume(process_payment_message)
+    
+    logger.info("Setting up dedicated channel for retry consumer...")
+    retry_channel = await connection.channel()
+    # High prefetch count because we hold messages in memory while sleeping
+    # This prevents the consumer from blocking other retries if many are delayed
+    await retry_channel.set_qos(prefetch_count=100)
+    
+    retry_queue_obj = await retry_channel.declare_queue(
+        settings.PAYMENTS_RETRY_QUEUE_NAME,
+        durable=True
+    )
+    
+    logger.info("Starting to consume retry messages...")
+    await retry_queue_obj.consume(process_retry_message)
     
     return connection
