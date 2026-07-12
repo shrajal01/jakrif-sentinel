@@ -1,5 +1,6 @@
 import json
 import logging
+import random
 import aio_pika
 
 from worker.config import settings
@@ -73,12 +74,26 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                 except (FakeBankTimeoutError, FakeBankServerError) as e:
                     logger.warning(f"[{payment_id}] Bank Response - RECOVERABLE ERROR: {e}")
                     
-                    await publisher.publish_to_queue(
-                        settings.PAYMENTS_RETRY_QUEUE_NAME,
-                        payment_data
-                    )
+                    retry_count = payment_data.get("retry_count", 0)
                     
-                    logger.info(f"[{payment_id}] Payment sent to retry queue. Final Status - PROCESSING (Retrying)")
+                    if retry_count >= 3:
+                        logger.warning(f"[{payment_id}] Max retries (3) reached. Failing payment.")
+                        await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
+                        logger.info(f"[{payment_id}] Final Status - FAILED (Max retries reached)")
+                    else:
+                        payment_data["retry_count"] = retry_count + 1
+                        
+                        # Exponential backoff with jitter
+                        base_delay = 5  # Base delay of 5 seconds
+                        delay = (base_delay * (2 ** retry_count)) + random.uniform(0, 2)
+                        payment_data["retry_delay"] = delay
+                        
+                        await publisher.publish_to_queue(
+                            settings.PAYMENTS_RETRY_QUEUE_NAME,
+                            payment_data
+                        )
+                        
+                        logger.info(f"[{payment_id}] Payment sent to retry queue. Retry {payment_data['retry_count']}/3. Delay: {delay:.2f}s. Final Status - PROCESSING (Retrying)")
 
                 # Acknowledge successful processing (including expected business failures)
                 await message.ack()
