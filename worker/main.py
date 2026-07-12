@@ -33,6 +33,10 @@ async def main() -> None:
             logger.info("RabbitMQ connection closed.")
 
 if __name__ == "__main__":
+    # Fix for psycopg async mode on Windows
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
