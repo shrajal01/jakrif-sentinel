@@ -30,6 +30,10 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
             payment_data = json.loads(body)
         except Exception as e:
             logger.error(f"[{message.message_id}] Rejected malformed message: {e}")
+            await publisher.publish_to_queue(
+                settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME,
+                {"original_body": body if 'body' in locals() else "", "dlq_reason": f"Malformed message: {e}"}
+            )
             await message.reject(requeue=False)
             return
 
@@ -40,6 +44,11 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
 
         if not payment_id:
             logger.error(f"[{message.message_id}] Rejected message missing payment_id: {payment_data}")
+            payment_data["dlq_reason"] = "Missing payment_id"
+            await publisher.publish_to_queue(
+                settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME,
+                payment_data
+            )
             await message.reject(requeue=False)
             return
 
@@ -78,6 +87,14 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                     
                     if retry_count >= 3:
                         logger.warning(f"[{payment_id}] Max retries (3) reached. Failing payment.")
+                        
+                        payment_data["dlq_reason"] = f"Max retries (3) reached. Last error: {str(e)}"
+                        await publisher.publish_to_queue(
+                            settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME,
+                            payment_data
+                        )
+                        logger.warning(f"[{payment_id}] Message routed to DLQ ({settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME})")
+                        
                         await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
                         logger.info(f"[{payment_id}] Final Status - FAILED (Max retries reached)")
                     else:
@@ -101,17 +118,25 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
             except ValueError as e:
                 # DB transition failure or UUID not found (invalid state, do not requeue)
                 logger.error(f"[{payment_id}] Database/State Error: {e}")
+                payment_data["dlq_reason"] = f"Database/State Error: {e}"
+                await publisher.publish_to_queue(settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME, payment_data)
                 await message.reject(requeue=False)
                 
             except Exception as e:
                 # Unexpected database failure (e.g., connection lost)
                 logger.error(f"[{payment_id}] Unexpected error during processing: {e}", exc_info=True)
+                payment_data["dlq_reason"] = f"Unexpected processing error: {str(e)}"
+                await publisher.publish_to_queue(settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME, payment_data)
                 await message.reject(requeue=False)
 
     except Exception as e:
         # Ultimate fallback to ensure worker NEVER crashes
         logger.critical(f"Critical error in message handler: {e}", exc_info=True)
         try:
+            await publisher.publish_to_queue(
+                settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME,
+                {"message_id": message.message_id, "dlq_reason": f"Critical handler error: {str(e)}"}
+            )
             await message.reject(requeue=False)
         except Exception:
             pass
