@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 import logging
 import json
@@ -22,69 +23,95 @@ async def create_payment(db: AsyncSession, payment_in: PaymentCreate, idempotenc
     Create a new payment record.
     Generates a UUID automatically and defaults status to CREATED.
     """
+    def deserialize_payment(cached_str: str) -> Payment:
+        data = json.loads(cached_str)
+        from decimal import Decimal
+        return Payment(
+            id=data.get("id"),
+            payment_id=uuid.UUID(data.get("payment_id")),
+            amount=Decimal(str(data.get("amount"))),
+            currency=data.get("currency"),
+            status=PaymentStatus(data.get("status")),
+            merchant_reference=data.get("merchant_reference"),
+            description=data.get("description"),
+            created_at=datetime.fromisoformat(data.get("created_at")) if data.get("created_at") else None,
+            updated_at=datetime.fromisoformat(data.get("updated_at")) if data.get("updated_at") else None,
+        )
+
     redis_key = None
+    lock_key = None
+    
     if idempotency_key:
         redis_key = f"idempotency:payments:{idempotency_key}"
+        lock_key = f"idempotency:payments:lock:{idempotency_key}"
         logger.info(f"Checking idempotency key: {idempotency_key}")
+        
         cached = await redis_service.get(redis_key)
         if cached:
             logger.info(f"Idempotency hit for {idempotency_key}. Returning cached response.")
-            data = json.loads(cached)
-            from decimal import Decimal
-            return Payment(
-                id=data.get("id"),
-                payment_id=uuid.UUID(data.get("payment_id")),
-                amount=Decimal(str(data.get("amount"))),
-                currency=data.get("currency"),
-                status=PaymentStatus(data.get("status")),
-                merchant_reference=data.get("merchant_reference"),
-                description=data.get("description"),
-                created_at=datetime.fromisoformat(data.get("created_at")) if data.get("created_at") else None,
-                updated_at=datetime.fromisoformat(data.get("updated_at")) if data.get("updated_at") else None,
-            )
-
-    payment = Payment(
-        payment_id=uuid.uuid4(),
-        amount=payment_in.amount,
-        currency=payment_in.currency,
-        status=PaymentStatus.CREATED,
-        merchant_reference=payment_in.merchant_reference,
-        description=payment_in.description
-    )
-    db.add(payment)
-    await db.commit()
-    await db.refresh(payment)
+            return deserialize_payment(cached)
+            
+        # Try to acquire lock
+        lock_acquired = await redis_service.set_if_not_exists(lock_key, "locked", expire_seconds=30)
+        
+        if not lock_acquired:
+            logger.info(f"Idempotency lock exists for {idempotency_key}. Waiting briefly...")
+            await asyncio.sleep(0.5)
+            
+            cached = await redis_service.get(redis_key)
+            if cached:
+                logger.info(f"Idempotency hit after wait for {idempotency_key}. Returning cached response.")
+                return deserialize_payment(cached)
+            else:
+                logger.warning(f"Idempotency lock conflict for {idempotency_key}. Returning 409.")
+                raise HTTPException(
+                    status_code=http_status.HTTP_409_CONFLICT,
+                    detail="A request with this Idempotency-Key is currently being processed."
+                )
 
     try:
-        await publish_payment_event({
-            "payment_id": str(payment.payment_id),
-            "amount": float(payment.amount),
-            "currency": payment.currency,
-            "merchant_reference": payment.merchant_reference,
-        })
-    except Exception as e:
-        logger.error(f"Failed to publish payment event for payment {payment.id}: {e}")
-        # The payment was already saved to the database successfully.
-        # Failing here would return an error to the user even though their payment
-        # record exists. We log the failure so it can be monitored, but the
-        # creation process should still succeed to avoid data inconsistency.
+        payment = Payment(
+            payment_id=uuid.uuid4(),
+            amount=payment_in.amount,
+            currency=payment_in.currency,
+            status=PaymentStatus.CREATED,
+            merchant_reference=payment_in.merchant_reference,
+            description=payment_in.description
+        )
+        db.add(payment)
+        await db.commit()
+        await db.refresh(payment)
 
-    if redis_key:
-        data_to_cache = {
-            "id": payment.id,
-            "payment_id": str(payment.payment_id),
-            "amount": float(payment.amount),
-            "currency": payment.currency,
-            "status": payment.status.value,
-            "merchant_reference": payment.merchant_reference,
-            "description": payment.description,
-            "created_at": payment.created_at.isoformat() if payment.created_at else None,
-            "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
-        }
-        await redis_service.set(redis_key, json.dumps(data_to_cache), expire_seconds=86400)
-        logger.info(f"Cached idempotency response for {idempotency_key}")
+        try:
+            await publish_payment_event({
+                "payment_id": str(payment.payment_id),
+                "amount": float(payment.amount),
+                "currency": payment.currency,
+                "merchant_reference": payment.merchant_reference,
+            })
+        except Exception as e:
+            logger.error(f"Failed to publish payment event for payment {payment.id}: {e}")
 
-    return payment
+        if redis_key:
+            data_to_cache = {
+                "id": payment.id,
+                "payment_id": str(payment.payment_id),
+                "amount": float(payment.amount),
+                "currency": payment.currency,
+                "status": payment.status.value,
+                "merchant_reference": payment.merchant_reference,
+                "description": payment.description,
+                "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+            }
+            await redis_service.set(redis_key, json.dumps(data_to_cache), expire_seconds=86400)
+            logger.info(f"Cached idempotency response for {idempotency_key}")
+
+        return payment
+
+    finally:
+        if lock_key:
+            await redis_service.delete(lock_key)
 
 
 async def get_payment(db: AsyncSession, payment_id: int) -> Optional[Payment]:
