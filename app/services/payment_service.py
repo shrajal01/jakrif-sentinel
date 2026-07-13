@@ -40,34 +40,51 @@ async def create_payment(db: AsyncSession, payment_in: PaymentCreate, idempotenc
 
     redis_key = None
     lock_key = None
+    redis_available = True
     
     if idempotency_key:
         redis_key = f"idempotency:payments:{idempotency_key}"
         lock_key = f"idempotency:payments:lock:{idempotency_key}"
-        logger.info(f"Checking idempotency key: {idempotency_key}")
         
-        cached = await redis_service.get(redis_key)
-        if cached:
-            logger.info(f"Idempotency hit for {idempotency_key}. Returning cached response.")
-            return deserialize_payment(cached)
-            
-        # Try to acquire lock
-        lock_acquired = await redis_service.set_if_not_exists(lock_key, "locked", expire_seconds=30)
-        
-        if not lock_acquired:
-            logger.info(f"Idempotency lock exists for {idempotency_key}. Waiting briefly...")
-            await asyncio.sleep(0.5)
-            
+        try:
+            # 1. Check if we already processed this exact request
             cached = await redis_service.get(redis_key)
             if cached:
-                logger.info(f"Idempotency hit after wait for {idempotency_key}. Returning cached response.")
+                logger.info(f"Idempotency HIT for key: {idempotency_key}. Duplicate prevented.")
                 return deserialize_payment(cached)
+            
+            logger.info(f"Idempotency MISS for key: {idempotency_key}. Proceeding to acquire lock.")
+            
+            # 2. Acquire a short-lived lock to prevent race conditions during concurrent identical requests
+            lock_acquired = await redis_service.set_if_not_exists(lock_key, "locked", expire_seconds=30)
+            
+            if lock_acquired:
+                logger.info(f"Lock acquired for {idempotency_key}.")
             else:
-                logger.warning(f"Idempotency lock conflict for {idempotency_key}. Returning 409.")
-                raise HTTPException(
-                    status_code=http_status.HTTP_409_CONFLICT,
-                    detail="A request with this Idempotency-Key is currently being processed."
-                )
+                # Lock exists: Another identical request is currently processing. Wait briefly to see if it finishes.
+                logger.info(f"Idempotency lock exists for {idempotency_key}. Waiting briefly...")
+                await asyncio.sleep(0.5)
+                
+                # 3. Check cache one last time after waiting
+                cached = await redis_service.get(redis_key)
+                if cached:
+                    logger.info(f"Idempotency HIT after wait for key: {idempotency_key}. Duplicate prevented.")
+                    return deserialize_payment(cached)
+                else:
+                    logger.warning(f"Idempotency lock conflict for {idempotency_key}. Returning 409.")
+                    raise HTTPException(
+                        status_code=http_status.HTTP_409_CONFLICT,
+                        detail="A request with this Idempotency-Key is currently being processed."
+                    )
+        except HTTPException:
+            # Re-raise HTTP exceptions so we don't accidentally swallow the 409 Conflict
+            raise
+        except Exception as e:
+            # Gracefully handle Redis failures. We log the error but allow processing to continue normally.
+            logger.warning(f"Redis unavailable or failed during idempotency check: {e}. Proceeding without idempotency.")
+            redis_available = False
+            lock_key = None
+            redis_key = None
 
     try:
         payment = Payment(
@@ -92,26 +109,35 @@ async def create_payment(db: AsyncSession, payment_in: PaymentCreate, idempotenc
         except Exception as e:
             logger.error(f"Failed to publish payment event for payment {payment.id}: {e}")
 
-        if redis_key:
-            data_to_cache = {
-                "id": payment.id,
-                "payment_id": str(payment.payment_id),
-                "amount": float(payment.amount),
-                "currency": payment.currency,
-                "status": payment.status.value,
-                "merchant_reference": payment.merchant_reference,
-                "description": payment.description,
-                "created_at": payment.created_at.isoformat() if payment.created_at else None,
-                "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
-            }
-            await redis_service.set(redis_key, json.dumps(data_to_cache), expire_seconds=86400)
-            logger.info(f"Cached idempotency response for {idempotency_key}")
+        # 4. Store the successful response in Redis
+        if redis_key and redis_available:
+            try:
+                data_to_cache = {
+                    "id": payment.id,
+                    "payment_id": str(payment.payment_id),
+                    "amount": float(payment.amount),
+                    "currency": payment.currency,
+                    "status": payment.status.value,
+                    "merchant_reference": payment.merchant_reference,
+                    "description": payment.description,
+                    "created_at": payment.created_at.isoformat() if payment.created_at else None,
+                    "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+                }
+                await redis_service.set(redis_key, json.dumps(data_to_cache), expire_seconds=86400)
+                logger.info(f"Cached idempotency response for {idempotency_key}")
+            except Exception as e:
+                logger.warning(f"Failed to cache response in Redis: {e}")
 
         return payment
 
     finally:
-        if lock_key:
-            await redis_service.delete(lock_key)
+        # 5. Ensure the lock is released so future retries aren't blocked if processing fails
+        if lock_key and redis_available:
+            try:
+                await redis_service.delete(lock_key)
+                logger.info(f"Lock released for {idempotency_key}.")
+            except Exception as e:
+                logger.warning(f"Failed to release Redis lock: {e}")
 
 
 async def get_payment(db: AsyncSession, payment_id: int) -> Optional[Payment]:
