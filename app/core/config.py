@@ -16,5 +16,6 @@ class Settings(BaseSettings):
     RABBITMQ_USER: str = "guest"
     RABBITMQ_PASSWORD: str = "guest"
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
+    REDIS_URL: str = "redis://localhost:6379/0"
 
 settings = Settings()

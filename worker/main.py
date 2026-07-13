@@ -3,6 +3,7 @@ import logging
 import sys
 
 from worker.consumer import start_consumer
+from app.services.redis_service import redis_service
 
 # Configure logging
 logging.basicConfig(
@@ -16,6 +17,7 @@ async def main() -> None:
     logger.info("Initializing worker...")
     connection = None
     try:
+        await redis_service.connect()
         connection = await start_consumer()
         logger.info("Worker is running. Press CTRL+C to exit.")
         
@@ -27,6 +29,7 @@ async def main() -> None:
     except Exception as e:
         logger.error(f"Worker encountered an error: {e}", exc_info=True)
     finally:
+        await redis_service.disconnect()
         if connection and not connection.is_closed:
             logger.info("Closing RabbitMQ connection...")
             await connection.close()
@@ -35,7 +38,7 @@ async def main() -> None:
 if __name__ == "__main__":
     # Fix for psycopg async mode on Windows
     if sys.platform == "win32":
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())  # type: ignore
 
     try:
         asyncio.run(main())

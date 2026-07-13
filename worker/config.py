@@ -7,6 +7,7 @@ class WorkerSettings(BaseSettings):
     RABBITMQ_USER: str = "guest"
     RABBITMQ_PASSWORD: str = "guest"
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
+    REDIS_URL: str = "redis://localhost:6379/0"
     
     PAYMENTS_EXCHANGE_NAME: str = "payments_exchange"
     PAYMENTS_QUEUE_NAME: str = "payments_queue"

@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
 from sqlalchemy import text
@@ -10,13 +11,14 @@ from app.api.auth import router as auth_router
 from app.api.payments import router as payments_router
 from app.core.config import settings
 from app.database.session import engine
+from app.services.redis_service import redis_service
 
 # Configure standard logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Application lifespan manager.
     Validates database connection at startup.
@@ -27,6 +29,9 @@ async def lifespan(app: FastAPI):
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
             logger.info("Successfully connected to the database.")
+            
+        # Connect to Redis
+        await redis_service.connect()
     except SQLAlchemyError as e:
         logger.error(f"Database connection failed: {e}")
         raise
@@ -39,6 +44,7 @@ async def lifespan(app: FastAPI):
     # Gracefully dispose of all database connections
     logger.info("Shutting down application...")
     engine.dispose()
+    await redis_service.disconnect()
     logger.info("Database connections disposed.")
 
 app = FastAPI(
