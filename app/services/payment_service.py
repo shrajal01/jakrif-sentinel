@@ -1,5 +1,7 @@
 import uuid
 import logging
+import json
+from datetime import datetime
 from typing import Optional, List, Tuple
 
 from fastapi import HTTPException, status as http_status
@@ -10,6 +12,7 @@ from sqlalchemy import func
 from app.models.payment import Payment, PaymentStatus
 from app.schemas.payment import PaymentCreate
 from worker.publisher import publish_payment_event
+from app.services.redis_service import redis_service
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +22,27 @@ async def create_payment(db: AsyncSession, payment_in: PaymentCreate, idempotenc
     Create a new payment record.
     Generates a UUID automatically and defaults status to CREATED.
     """
+    redis_key = None
+    if idempotency_key:
+        redis_key = f"idempotency:payments:{idempotency_key}"
+        logger.info(f"Checking idempotency key: {idempotency_key}")
+        cached = await redis_service.get(redis_key)
+        if cached:
+            logger.info(f"Idempotency hit for {idempotency_key}. Returning cached response.")
+            data = json.loads(cached)
+            from decimal import Decimal
+            return Payment(
+                id=data.get("id"),
+                payment_id=uuid.UUID(data.get("payment_id")),
+                amount=Decimal(str(data.get("amount"))),
+                currency=data.get("currency"),
+                status=PaymentStatus(data.get("status")),
+                merchant_reference=data.get("merchant_reference"),
+                description=data.get("description"),
+                created_at=datetime.fromisoformat(data.get("created_at")) if data.get("created_at") else None,
+                updated_at=datetime.fromisoformat(data.get("updated_at")) if data.get("updated_at") else None,
+            )
+
     payment = Payment(
         payment_id=uuid.uuid4(),
         amount=payment_in.amount,
@@ -44,6 +68,21 @@ async def create_payment(db: AsyncSession, payment_in: PaymentCreate, idempotenc
         # Failing here would return an error to the user even though their payment
         # record exists. We log the failure so it can be monitored, but the
         # creation process should still succeed to avoid data inconsistency.
+
+    if redis_key:
+        data_to_cache = {
+            "id": payment.id,
+            "payment_id": str(payment.payment_id),
+            "amount": float(payment.amount),
+            "currency": payment.currency,
+            "status": payment.status.value,
+            "merchant_reference": payment.merchant_reference,
+            "description": payment.description,
+            "created_at": payment.created_at.isoformat() if payment.created_at else None,
+            "updated_at": payment.updated_at.isoformat() if payment.updated_at else None,
+        }
+        await redis_service.set(redis_key, json.dumps(data_to_cache), expire_seconds=86400)
+        logger.info(f"Cached idempotency response for {idempotency_key}")
 
     return payment
 
