@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional
 
 from app.database.session import get_db
 from app.schemas.payment import PaymentCreate, PaymentResponse, PaymentListResponse
@@ -18,12 +19,13 @@ router = APIRouter(prefix="/payments", tags=["Payments"])
 async def create_payment(
     payment_in: PaymentCreate,
     db: AsyncSession = Depends(get_db),
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     """
     Create a new payment.
     Note: The payment state machine is not implemented yet.
     """
-    return await payment_service.create_payment(db=db, payment_in=payment_in)
+    return await payment_service.create_payment(db=db, payment_in=payment_in, idempotency_key=idempotency_key)
 
 
 @router.get(

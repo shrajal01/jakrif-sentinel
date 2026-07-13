@@ -14,7 +14,7 @@ from worker.publisher import publish_payment_event
 logger = logging.getLogger(__name__)
 
 
-async def create_payment(db: AsyncSession, payment_in: PaymentCreate) -> Payment:
+async def create_payment(db: AsyncSession, payment_in: PaymentCreate, idempotency_key: Optional[str] = None) -> Payment:
     """
     Create a new payment record.
     Generates a UUID automatically and defaults status to CREATED.
