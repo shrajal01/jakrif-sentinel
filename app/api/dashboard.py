@@ -7,6 +7,7 @@ import aio_pika
 from app.database.session import get_db
 from app.models.payment import Payment, PaymentStatus
 from app.models.request_log import RequestLog
+from app.models.retry_attempt import RetryAttempt
 from app.core.config import settings
 from worker.config import settings as worker_settings
 from app.core.logging import get_logger
@@ -129,4 +130,44 @@ async def get_recent_logs(limit: int = 20, db: AsyncSession = Depends(get_db)):
             "created_at": l.created_at
         }
         for l in logs
+    ]
+
+@router.get("/failed-payments", summary="Get recent failed payments")
+async def get_failed_payments(limit: int = 10, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Payment).where(Payment.status == PaymentStatus.FAILED).order_by(desc(Payment.created_at)).limit(limit)
+    )
+    payments = result.scalars().all()
+    return [
+        {
+            "id": p.id,
+            "payment_id": str(p.payment_id),
+            "amount": float(p.amount),
+            "currency": p.currency,
+            "status": p.status.value,
+            "merchant_reference": p.merchant_reference,
+            "created_at": p.created_at,
+            "updated_at": p.updated_at
+        }
+        for p in payments
+    ]
+
+@router.get("/recent-retries", summary="Get recent retry attempts")
+async def get_recent_retries(limit: int = 10, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(RetryAttempt).order_by(desc(RetryAttempt.created_at)).limit(limit)
+    )
+    retries = result.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "service_id": r.service_id,
+            "request_id": r.request_id,
+            "attempt_number": r.attempt_number,
+            "status": r.status,
+            "latency_ms": r.latency_ms,
+            "error_message": r.error_message,
+            "created_at": r.created_at
+        }
+        for r in retries
     ]
