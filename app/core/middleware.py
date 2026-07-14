@@ -32,6 +32,10 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         # Set context variables for this request's scope
         req_token = request_id.set(req_id)
         corr_token = correlation_id.set(corr_id)
+        
+        # Store in request.state for access in route handlers
+        request.state.request_id = req_id
+        request.state.correlation_id = corr_id
 
         start_time = time.monotonic()
         logger.info(
