@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.router import api_router
 from app.api.auth import router as auth_router
 from app.api.payments import router as payments_router
+from app.api.dashboard import router as dashboard_router
 from app.core.config import settings
 from app.core.logging import configure_structlog, get_logger
 from app.core.middleware import RequestContextMiddleware
@@ -62,6 +63,7 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(api_router)
 app.include_router(auth_router)
 app.include_router(payments_router)
+app.include_router(dashboard_router)
 
 @app.get("/health", tags=["Health"])
 def health_check():
