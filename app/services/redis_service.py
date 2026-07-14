@@ -1,10 +1,10 @@
-import logging
 from typing import Any, Optional
 import redis.asyncio as redis
 
 from app.core.config import settings
+from app.core.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("service.redis")
 
 class RedisService:
     """

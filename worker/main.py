@@ -1,17 +1,20 @@
 import asyncio
-import logging
 import sys
+import os
+import platform
 
 from worker.consumer import start_consumer
 from app.services.redis_service import redis_service
+from app.core.logging import configure_structlog, get_logger
+from app.core.context import worker_id as worker_id_var
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
+# Configure structured logging before anything else
+configure_structlog()
+logger = get_logger("worker.main")
+
+# Generate and set a worker ID for process-scoped context
+worker_id = f"{platform.node()}-{os.getpid()}"
+worker_id_var.set(worker_id)
 
 async def main() -> None:
     logger.info("Initializing worker...")

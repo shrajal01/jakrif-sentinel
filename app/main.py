@@ -1,4 +1,3 @@
-import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
@@ -10,12 +9,14 @@ from app.api.router import api_router
 from app.api.auth import router as auth_router
 from app.api.payments import router as payments_router
 from app.core.config import settings
+from app.core.logging import configure_structlog, get_logger
+from app.core.middleware import RequestContextMiddleware
 from app.database.session import engine
 from app.services.redis_service import redis_service
 
-# Configure standard logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Configure structured logging before anything else
+configure_structlog()
+logger = get_logger("app.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -33,10 +34,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Connect to Redis
         await redis_service.connect()
     except SQLAlchemyError as e:
-        logger.error(f"Database connection failed: {e}")
+        logger.error("Database connection failed", error=str(e))
         raise
     except Exception as e:
-        logger.exception("Unexpected startup error")
+        logger.error("Unexpected startup error", error=str(e), exc_info=True)
         raise
 
     yield  # Application runs during this period
@@ -53,6 +54,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Add structured logging middleware
+app.add_middleware(RequestContextMiddleware)
 
 # Mount the router
 app.include_router(api_router)

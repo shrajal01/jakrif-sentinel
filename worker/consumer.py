@@ -1,10 +1,11 @@
 import json
-import logging
 import random
 import asyncio
 import aio_pika
 
 from worker.config import settings
+from app.core.logging import get_logger
+from app.core.context import correlation_id as correlation_id_var, payment_id as payment_id_var
 from app.services.fake_bank import (
     fake_bank_service,
     FakeBankTimeoutError,
@@ -15,7 +16,7 @@ from app.services.payment_service import update_payment_status_by_uuid
 from app.models.payment import PaymentStatus
 from worker.publisher import publisher
 
-logger = logging.getLogger(__name__)
+logger = get_logger("worker.consumer")
 
 async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
     """
@@ -42,6 +43,10 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
         amount = payment_data.get("amount")
         currency = payment_data.get("currency")
         merchant_reference = payment_data.get("merchant_reference")
+
+        # Set structured logging context for this message
+        correlation_id_var.set(payment_data.get("correlation_id"))
+        payment_id_var.set(payment_id)
 
         if not payment_id:
             logger.error(f"[{message.message_id}] Rejected message missing payment_id: {payment_data}")
@@ -168,6 +173,10 @@ async def process_retry_message(message: aio_pika.abc.AbstractIncomingMessage) -
             return
 
         payment_id = payment_data.get("payment_id")
+        
+        # Set structured logging context for this message
+        correlation_id_var.set(payment_data.get("correlation_id"))
+        payment_id_var.set(payment_id)
         
         if not payment_id:
             logger.error(f"[{message.message_id}] Retry Engine - Rejected message missing payment_id")

@@ -1,13 +1,13 @@
 import json
-import logging
 from typing import Any, Dict
 
 import aio_pika
 from aio_pika import Message, DeliveryMode
 
 from worker.config import settings
+from app.core.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("worker.publisher")
 
 class RabbitMQPublisher:
     def __init__(self):

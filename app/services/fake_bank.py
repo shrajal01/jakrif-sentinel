@@ -1,9 +1,9 @@
 import asyncio
 import random
-import logging
 from typing import Dict
+from app.core.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("service.fake_bank")
 
 class FakeBankTimeoutError(Exception):
     """Raised when the fake bank simulates a network or processing timeout."""

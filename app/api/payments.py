@@ -5,6 +5,7 @@ from typing import Optional
 from app.database.session import get_db
 from app.schemas.payment import PaymentCreate, PaymentResponse, PaymentListResponse
 from app.services import payment_service
+from app.core.context import correlation_id as correlation_id_var
 
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -25,7 +26,12 @@ async def create_payment(
     Create a new payment.
     Note: The payment state machine is not implemented yet.
     """
-    return await payment_service.create_payment(db=db, payment_in=payment_in, idempotency_key=idempotency_key)
+    return await payment_service.create_payment(
+        db=db,
+        payment_in=payment_in,
+        idempotency_key=idempotency_key,
+        correlation_id=correlation_id_var.get(),
+    )
 
 
 @router.get(
