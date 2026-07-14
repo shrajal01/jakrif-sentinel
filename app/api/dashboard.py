@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, text
 from typing import List, Dict, Any
 import aio_pika
 
@@ -10,6 +10,7 @@ from app.models.request_log import RequestLog
 from app.core.config import settings
 from worker.config import settings as worker_settings
 from app.core.logging import get_logger
+from app.services.redis_service import redis_service
 
 logger = get_logger("api.dashboard")
 
@@ -48,9 +49,32 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     )
     processing_payments = processing_result.scalar() or 0
 
-    # RabbitMQ Queue sizes
-    retry_count = await get_queue_size(worker_settings.PAYMENTS_RETRY_QUEUE_NAME)
-    dlq_count = await get_queue_size(worker_settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME)
+    # RabbitMQ Queue sizes & Status
+    rabbitmq_status = "healthy"
+    try:
+        retry_count = await get_queue_size(worker_settings.PAYMENTS_RETRY_QUEUE_NAME)
+        dlq_count = await get_queue_size(worker_settings.PAYMENTS_DEAD_LETTER_QUEUE_NAME)
+    except Exception:
+        rabbitmq_status = "unhealthy"
+        retry_count = 0
+        dlq_count = 0
+
+    # Postgres Status
+    try:
+        await db.execute(text("SELECT 1"))
+        postgresql_status = "healthy"
+    except Exception:
+        postgresql_status = "unhealthy"
+
+    # Redis Status
+    try:
+        if redis_service.redis:
+            await redis_service.redis.ping()
+            redis_status = "healthy"
+        else:
+            redis_status = "unhealthy"
+    except Exception:
+        redis_status = "unhealthy"
 
     return {
         "total_payments": total_payments,
@@ -58,7 +82,11 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         "failed_payments": failed_payments,
         "processing_payments": processing_payments,
         "retry_queue_count": retry_count,
-        "dead_letter_queue_count": dlq_count
+        "dead_letter_queue_count": dlq_count,
+        "rabbitmq_status": rabbitmq_status,
+        "postgresql_status": postgresql_status,
+        "redis_status": redis_status,
+        "health_status": "healthy" if (rabbitmq_status == "healthy" and postgresql_status == "healthy" and redis_status == "healthy") else "degraded"
     }
 
 @router.get("/recent-payments", summary="Get recent payments")
