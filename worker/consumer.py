@@ -1,5 +1,6 @@
 import json
 import random
+import time
 import asyncio
 import aio_pika
 
@@ -13,10 +14,36 @@ from app.services.fake_bank import (
 )
 from app.database.session import AsyncSessionLocal
 from app.services.payment_service import update_payment_status_by_uuid
+from app.services.service_registry import get_or_create_service_id
 from app.models.payment import PaymentStatus
+from app.models.retry_attempt import RetryAttempt
 from worker.publisher import publisher
 
 logger = get_logger("worker.consumer")
+
+# Logical service name the worker is registered under for RetryAttempt FKs.
+WORKER_SERVICE_NAME = "jakrif-worker"
+
+
+async def _record_retry_attempt(db, payment_id: str, attempt_number: int, status: str, latency_ms: int, error_message: str | None) -> None:
+    """
+    Persist one row per bank-call attempt that hit a recoverable error, so the
+    dashboard's "Faults & Retries" panel reflects real retry activity.
+    A failure here is logged and swallowed - it must never break payment processing.
+    """
+    try:
+        service_id = await get_or_create_service_id(db, name=WORKER_SERVICE_NAME, base_url="internal://worker")
+        db.add(RetryAttempt(
+            service_id=service_id,
+            request_id=payment_id,
+            attempt_number=attempt_number,
+            status=status,
+            latency_ms=latency_ms,
+            error_message=error_message,
+        ))
+        await db.commit()
+    except Exception as e:
+        logger.warning(f"[{payment_id}] Failed to persist retry attempt: {e}")
 
 async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage) -> None:
     """
@@ -75,6 +102,7 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                     logger.info(f"[{payment_id}] Processing (Retry {retry_count}) - Continuing from existing PROCESSING state")
 
                 # 3. Call Fake Bank
+                call_start = time.monotonic()
                 try:
                     response = await fake_bank_service.process_transaction(
                         amount=amount,
@@ -91,6 +119,7 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                         logger.info(f"[{payment_id}] Final Status - FAILED (Bank declined)")
 
                 except (FakeBankTimeoutError, FakeBankServerError) as e:
+                    latency_ms = int((time.monotonic() - call_start) * 1000)
                     logger.warning(f"[{payment_id}] Bank Response - RECOVERABLE ERROR: {e}")
                     
                     retry_count = payment_data.get("retry_count", 0)
@@ -107,6 +136,11 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                         
                         await update_payment_status_by_uuid(db, payment_id, PaymentStatus.FAILED)
                         logger.info(f"[{payment_id}] Final Status - FAILED (Max retries reached)")
+
+                        await _record_retry_attempt(
+                            db, payment_id, attempt_number=retry_count + 1,
+                            status="DEAD_LETTER", latency_ms=latency_ms, error_message=str(e)
+                        )
                     else:
                         payment_data["retry_count"] = retry_count + 1
                         
@@ -121,6 +155,11 @@ async def process_payment_message(message: aio_pika.abc.AbstractIncomingMessage)
                         )
                         
                         logger.info(f"[{payment_id}] Payment sent to retry queue. Retry {payment_data['retry_count']}/3. Delay: {delay:.2f}s. Final Status - PROCESSING (Retrying)")
+
+                        await _record_retry_attempt(
+                            db, payment_id, attempt_number=retry_count + 1,
+                            status="RETRY_SCHEDULED", latency_ms=latency_ms, error_message=str(e)
+                        )
 
                 # Acknowledge successful processing (including expected business failures)
                 await message.ack()
